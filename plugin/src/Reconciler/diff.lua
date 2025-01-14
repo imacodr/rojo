@@ -3,7 +3,9 @@
 	patch that can be later applied.
 ]]
 
-local Log = require(script.Parent.Parent.Parent.Log)
+local Packages = script.Parent.Parent.Parent.Packages
+local Log = require(Packages.Log)
+
 local invariant = require(script.Parent.Parent.invariant)
 local getProperty = require(script.Parent.getProperty)
 local Error = require(script.Parent.Error)
@@ -11,6 +13,87 @@ local decodeValue = require(script.Parent.decodeValue)
 
 local function isEmpty(table)
 	return next(table) == nil
+end
+
+local function fuzzyEq(a: number, b: number, epsilon: number): boolean
+	return math.abs(a - b) < epsilon
+end
+
+local function trueEquals(a, b): boolean
+	-- Exit early for simple equality values
+	if a == b then
+		return true
+	end
+
+	local typeA, typeB = typeof(a), typeof(b)
+
+	-- For tables, try recursive deep equality
+	if typeA == "table" and typeB == "table" then
+		local checkedKeys = {}
+		for key, value in pairs(a) do
+			checkedKeys[key] = true
+			if not trueEquals(value, b[key]) then
+				return false
+			end
+		end
+		for key, value in pairs(b) do
+			if checkedKeys[key] then
+				continue
+			end
+			if not trueEquals(value, a[key]) then
+				return false
+			end
+		end
+		return true
+
+	-- For numbers, compare with epsilon of 0.0001 to avoid floating point inequality
+	elseif typeA == "number" and typeB == "number" then
+		return fuzzyEq(a, b, 0.0001)
+
+	-- For EnumItem->number, compare the EnumItem's value
+	elseif typeA == "number" and typeB == "EnumItem" then
+		return a == b.Value
+	elseif typeA == "EnumItem" and typeB == "number" then
+		return a.Value == b
+
+	-- For Color3s, compare to RGB ints to avoid floating point inequality
+	elseif typeA == "Color3" and typeB == "Color3" then
+		local aR, aG, aB = math.floor(a.R * 255), math.floor(a.G * 255), math.floor(a.B * 255)
+		local bR, bG, bB = math.floor(b.R * 255), math.floor(b.G * 255), math.floor(b.B * 255)
+		return aR == bR and aG == bG and aB == bB
+
+	-- For CFrames, compare to components with epsilon of 0.0001 to avoid floating point inequality
+	elseif typeA == "CFrame" and typeB == "CFrame" then
+		local aComponents, bComponents = { a:GetComponents() }, { b:GetComponents() }
+		for i, aComponent in aComponents do
+			if not fuzzyEq(aComponent, bComponents[i], 0.0001) then
+				return false
+			end
+		end
+		return true
+
+	-- For Vector3s, compare to components with epsilon of 0.0001 to avoid floating point inequality
+	elseif typeA == "Vector3" and typeB == "Vector3" then
+		local aComponents, bComponents = { a.X, a.Y, a.Z }, { b.X, b.Y, b.Z }
+		for i, aComponent in aComponents do
+			if not fuzzyEq(aComponent, bComponents[i], 0.0001) then
+				return false
+			end
+		end
+		return true
+
+	-- For Vector2s, compare to components with epsilon of 0.0001 to avoid floating point inequality
+	elseif typeA == "Vector2" and typeB == "Vector2" then
+		local aComponents, bComponents = { a.X, a.Y }, { b.X, b.Y }
+		for i, aComponent in aComponents do
+			if not fuzzyEq(aComponent, bComponents[i], 0.0001) then
+				return false
+			end
+		end
+		return true
+	end
+
+	return false
 end
 
 local function shouldDeleteUnknownInstances(virtualInstance)
@@ -64,18 +147,24 @@ local function diff(instanceMap, virtualInstances, rootId)
 
 		local changedProperties = {}
 		for propertyName, virtualValue in pairs(virtualInstance.Properties) do
-			local ok, existingValueOrErr = getProperty(instance, propertyName)
+			local getProperySuccess, existingValueOrErr = getProperty(instance, propertyName)
 
-			if ok then
+			if getProperySuccess then
 				local existingValue = existingValueOrErr
-				local ok, decodedValue = decodeValue(virtualValue, instanceMap)
+				local decodeSuccess, decodedValue = decodeValue(virtualValue, instanceMap)
 
-				if ok then
-					if existingValue ~= decodedValue then
+				if decodeSuccess then
+					if not trueEquals(existingValue, decodedValue) then
+						Log.debug(
+							"{}.{} changed from '{}' to '{}'",
+							instance:GetFullName(),
+							propertyName,
+							existingValue,
+							decodedValue
+						)
 						changedProperties[propertyName] = virtualValue
 					end
 				else
-					local propertyType = next(virtualValue)
 					Log.warn(
 						"Failed to decode property {}.{}. Encoded property was: {:#?}",
 						virtualInstance.ClassName,
@@ -88,10 +177,8 @@ local function diff(instanceMap, virtualInstances, rootId)
 
 				if err.kind == Error.UnknownProperty then
 					Log.trace("Skipping unknown property {}.{}", err.details.className, err.details.propertyName)
-				elseif err.kind == Error.UnreadableProperty then
-					Log.trace("Skipping unreadable property {}.{}", err.details.className, err.details.propertyName)
 				else
-					return false, err
+					Log.trace("Skipping unreadable property {}.{}", err.details.className, err.details.propertyName)
 				end
 			end
 		end
@@ -113,6 +200,16 @@ local function diff(instanceMap, virtualInstances, rootId)
 			local childId = instanceMap.fromInstances[childInstance]
 
 			if childId == nil then
+				-- pcall to avoid security permission errors
+				local success, skip = pcall(function()
+					-- We don't remove instances that aren't going to be saved anyway,
+					-- such as the Rojo session lock value.
+					return childInstance.Archivable == false
+				end)
+				if success and skip then
+					continue
+				end
+
 				-- This is an existing instance not present in the virtual DOM.
 				-- We can mark it for deletion unless the user has asked us not
 				-- to delete unknown stuff.
@@ -120,9 +217,9 @@ local function diff(instanceMap, virtualInstances, rootId)
 					table.insert(patch.removed, childInstance)
 				end
 			else
-				local ok, err = diffInternal(childId)
+				local diffSuccess, err = diffInternal(childId)
 
-				if not ok then
+				if not diffSuccess then
 					return false, err
 				end
 			end
@@ -143,9 +240,9 @@ local function diff(instanceMap, virtualInstances, rootId)
 		return true
 	end
 
-	local ok, err = diffInternal(rootId)
+	local diffSuccess, err = diffInternal(rootId)
 
-	if not ok then
+	if not diffSuccess then
 		return false, err
 	end
 

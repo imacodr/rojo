@@ -2,8 +2,9 @@
 	Attempts to set a property on the given instance.
 ]]
 
-local RbxDom = require(script.Parent.Parent.Parent.RbxDom)
-local Log = require(script.Parent.Parent.Parent.Log)
+local Packages = script.Parent.Parent.Parent.Packages
+local Log = require(Packages.Log)
+local RbxDom = require(Packages.RbxDom)
 local Error = require(script.Parent.Error)
 
 local function setProperty(instance, propertyName, value)
@@ -20,26 +21,29 @@ local function setProperty(instance, propertyName, value)
 	end
 
 	if descriptor.scriptability == "None" or descriptor.scriptability == "Read" then
-		return false, Error.new(Error.UnwritableProperty, {
-			className = instance.ClassName,
-			propertyName = propertyName,
-		})
-	end
-
-	local ok, err = descriptor:write(instance, value)
-
-	if not ok then
-		if err.kind == RbxDom.Error.Kind.Roblox and err.extra:find("lacking permission") then
-			return false, Error.new(Error.LackingPropertyPermissions, {
+		return false,
+			Error.new(Error.UnwritableProperty, {
 				className = instance.ClassName,
 				propertyName = propertyName,
 			})
+	end
+
+	local writeSuccess, err = descriptor:write(instance, value)
+
+	if not writeSuccess then
+		if err.kind == RbxDom.Error.Kind.Roblox and err.extra:find("lacking permission") then
+			return false,
+				Error.new(Error.LackingPropertyPermissions, {
+					className = instance.ClassName,
+					propertyName = propertyName,
+				})
 		end
 
-		return false, Error.new(Error.OtherPropertyError, {
-			className = instance.ClassName,
-			propertyName = propertyName,
-		})
+		return false,
+			Error.new(Error.OtherPropertyError, {
+				className = instance.ClassName,
+				propertyName = propertyName,
+			})
 	end
 
 	return true

@@ -37,7 +37,12 @@ where
             .and_then(|name| name.to_str())
             .with_context(|| format!("Path did not have a file name: {}", path.display()))?;
 
-        match_trailing(&file_name, suffix)
+        match_trailing(file_name, suffix)
             .with_context(|| format!("Path did not end in {}: {}", suffix, path.display()))
     }
+}
+
+// TEMP function until rojo 8.0, when it can be replaced with bool::default (aka false)
+pub fn emit_legacy_scripts_default() -> Option<bool> {
+    Some(true)
 }

@@ -1,19 +1,11 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local TestEZ = require(ReplicatedStorage.TestEZ)
+local TestEZ = require(ReplicatedStorage.Packages:WaitForChild("TestEZ", 10))
 
 local Rojo = ReplicatedStorage.Rojo
 
-local DevSettings = require(Rojo.Plugin.DevSettings)
-
-local setDevSettings = not DevSettings:hasChangedValues()
-
-if setDevSettings then
-	DevSettings:createTestSettings()
-end
+local Settings = require(Rojo.Plugin.Settings)
+Settings:set("logLevel", "Trace")
+Settings:set("typecheckingEnabled", true)
 
 require(Rojo.Plugin.runTests)(TestEZ)
-
-if setDevSettings then
-	DevSettings:resetValues()
-end

@@ -1,7 +1,8 @@
 local Rojo = script:FindFirstAncestor("Rojo")
 local Plugin = Rojo.Plugin
+local Packages = Rojo.Packages
 
-local Roact = require(Rojo.Roact)
+local Roact = require(Packages.Roact)
 
 local Dictionary = require(Plugin.Dictionary)
 
@@ -35,9 +36,12 @@ end
 local function StudioToolbarWrapper(props)
 	return e(StudioPluginContext.Consumer, {
 		render = function(plugin)
-			return e(StudioToolbar, Dictionary.merge(props, {
-				plugin = plugin,
-			}))
+			return e(
+				StudioToolbar,
+				Dictionary.merge(props, {
+					plugin = plugin,
+				})
+			)
 		end,
 	})
 end

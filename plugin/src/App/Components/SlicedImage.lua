@@ -1,6 +1,7 @@
 local Rojo = script:FindFirstAncestor("Rojo")
+local Packages = Rojo.Packages
 
-local Roact = require(Rojo.Roact)
+local Roact = require(Packages.Roact)
 
 local e = Roact.createElement
 
@@ -19,6 +20,7 @@ local function SlicedImage(props)
 		Size = props.size,
 		Position = props.position,
 		AnchorPoint = props.anchorPoint,
+		AutomaticSize = props.automaticSize,
 
 		ZIndex = props.zIndex,
 		LayoutOrder = props.layoutOrder,

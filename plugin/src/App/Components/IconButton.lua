@@ -1,8 +1,9 @@
 local Rojo = script:FindFirstAncestor("Rojo")
 local Plugin = Rojo.Plugin
+local Packages = Rojo.Packages
 
-local Roact = require(Rojo.Roact)
-local Flipper = require(Rojo.Flipper)
+local Roact = require(Packages.Roact)
+local Flipper = require(Packages.Flipper)
 
 local Assets = require(Plugin.Assets)
 local bindingUtil = require(Plugin.App.bindingUtil)
@@ -29,6 +30,7 @@ function IconButton:render()
 		Position = self.props.position,
 		AnchorPoint = self.props.anchorPoint,
 
+		Visible = self.props.visible,
 		LayoutOrder = self.props.layoutOrder,
 		ZIndex = self.props.zIndex,
 		BackgroundTransparency = 1,
@@ -36,15 +38,11 @@ function IconButton:render()
 		[Roact.Event.Activated] = self.props.onClick,
 
 		[Roact.Event.MouseEnter] = function()
-			self.motor:setGoal(
-				Flipper.Spring.new(1, HOVER_SPRING_PROPS)
-			)
+			self.motor:setGoal(Flipper.Spring.new(1, HOVER_SPRING_PROPS))
 		end,
 
 		[Roact.Event.MouseLeave] = function()
-			self.motor:setGoal(
-				Flipper.Spring.new(0, HOVER_SPRING_PROPS)
-			)
+			self.motor:setGoal(Flipper.Spring.new(0, HOVER_SPRING_PROPS))
 		end,
 	}, {
 		Icon = e("ImageLabel", {
@@ -73,6 +71,8 @@ function IconButton:render()
 
 			BackgroundTransparency = 1,
 		}),
+
+		Children = Roact.createFragment(self.props[Roact.Children]),
 	})
 end
 

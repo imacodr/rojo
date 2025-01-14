@@ -1,21 +1,21 @@
 use std::borrow::Cow;
 
 use insta::assert_yaml_snapshot;
-use maplit::hashmap;
 
+use rbx_dom_weak::types::Ref;
 use rojo_insta_ext::RedactionMap;
 
 use crate::snapshot::{compute_patch_set, InstanceSnapshot, RojoTree};
 
 #[test]
 fn set_name_and_class_name() {
-    let mut redactions = RedactionMap::new();
+    let mut redactions = RedactionMap::default();
 
     let tree = empty_tree();
     redactions.intern(tree.get_root_id());
 
     let snapshot = InstanceSnapshot {
-        snapshot_id: None,
+        snapshot_id: Ref::none(),
         metadata: Default::default(),
         name: Cow::Borrowed("Some Folder"),
         class_name: Cow::Borrowed("Folder"),
@@ -31,19 +31,17 @@ fn set_name_and_class_name() {
 
 #[test]
 fn set_property() {
-    let mut redactions = RedactionMap::new();
+    let mut redactions = RedactionMap::default();
 
     let tree = empty_tree();
     redactions.intern(tree.get_root_id());
 
     let snapshot = InstanceSnapshot {
-        snapshot_id: None,
+        snapshot_id: Ref::none(),
         metadata: Default::default(),
         name: Cow::Borrowed("ROOT"),
         class_name: Cow::Borrowed("ROOT"),
-        properties: hashmap! {
-            "PropertyName".to_owned() => "Hello, world!".into(),
-        },
+        properties: [("PropertyName".into(), "Hello, world!".into())].into(),
         children: Vec::new(),
     };
 
@@ -55,7 +53,7 @@ fn set_property() {
 
 #[test]
 fn remove_property() {
-    let mut redactions = RedactionMap::new();
+    let mut redactions = RedactionMap::default();
 
     let mut tree = empty_tree();
     redactions.intern(tree.get_root_id());
@@ -70,7 +68,7 @@ fn remove_property() {
     }
 
     let snapshot = InstanceSnapshot {
-        snapshot_id: None,
+        snapshot_id: Ref::none(),
         metadata: Default::default(),
         name: Cow::Borrowed("ROOT"),
         class_name: Cow::Borrowed("ROOT"),
@@ -86,19 +84,19 @@ fn remove_property() {
 
 #[test]
 fn add_child() {
-    let mut redactions = RedactionMap::new();
+    let mut redactions = RedactionMap::default();
 
     let tree = empty_tree();
     redactions.intern(tree.get_root_id());
 
     let snapshot = InstanceSnapshot {
-        snapshot_id: None,
+        snapshot_id: Ref::none(),
         metadata: Default::default(),
         name: Cow::Borrowed("ROOT"),
         class_name: Cow::Borrowed("ROOT"),
         properties: Default::default(),
         children: vec![InstanceSnapshot {
-            snapshot_id: None,
+            snapshot_id: Ref::none(),
             metadata: Default::default(),
             name: Cow::Borrowed("New"),
             class_name: Cow::Borrowed("Folder"),
@@ -115,7 +113,7 @@ fn add_child() {
 
 #[test]
 fn remove_child() {
-    let mut redactions = RedactionMap::new();
+    let mut redactions = RedactionMap::default();
 
     let mut tree = empty_tree();
     redactions.intern(tree.get_root_id());
@@ -131,7 +129,7 @@ fn remove_child() {
     }
 
     let snapshot = InstanceSnapshot {
-        snapshot_id: None,
+        snapshot_id: Ref::none(),
         metadata: Default::default(),
         name: Cow::Borrowed("ROOT"),
         class_name: Cow::Borrowed("ROOT"),

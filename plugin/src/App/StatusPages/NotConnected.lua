@@ -1,7 +1,8 @@
 local Rojo = script:FindFirstAncestor("Rojo")
 local Plugin = Rojo.Plugin
+local Packages = Rojo.Packages
 
-local Roact = require(Rojo.Roact)
+local Roact = require(Packages.Roact)
 
 local Config = require(Plugin.Config)
 
@@ -9,6 +10,7 @@ local Theme = require(Plugin.App.Theme)
 local BorderedContainer = require(Plugin.App.Components.BorderedContainer)
 local TextButton = require(Plugin.App.Components.TextButton)
 local Header = require(Plugin.App.Components.Header)
+local Tooltip = require(Plugin.App.Components.Tooltip)
 
 local PORT_WIDTH = 74
 local DIVIDER_WIDTH = 1
@@ -25,8 +27,8 @@ local function AddressEntry(props)
 		}, {
 			Host = e("TextBox", {
 				Text = props.host or "",
-				Font = Enum.Font.Code,
-				TextSize = 18,
+				FontFace = theme.Font.Code,
+				TextSize = theme.TextSize.Large,
 				TextColor3 = theme.AddressEntry.TextColor,
 				TextXAlignment = Enum.TextXAlignment.Left,
 				TextTransparency = props.transparency,
@@ -44,13 +46,13 @@ local function AddressEntry(props)
 					if props.onHostChange ~= nil then
 						props.onHostChange(object.Text)
 					end
-				end
+				end,
 			}),
 
 			Port = e("TextBox", {
 				Text = props.port or "",
-				Font = Enum.Font.Code,
-				TextSize = 18,
+				FontFace = theme.Font.Code,
+				TextSize = theme.TextSize.Large,
 				TextColor3 = theme.AddressEntry.TextColor,
 				TextTransparency = props.transparency,
 				PlaceholderText = Config.defaultPort,
@@ -108,6 +110,7 @@ function NotConnectedPage:render()
 			Size = UDim2.new(1, 0, 0, 34),
 			LayoutOrder = 3,
 			BackgroundTransparency = 1,
+			ZIndex = 2,
 		}, {
 			Settings = e(TextButton, {
 				text = "Settings",
@@ -115,6 +118,10 @@ function NotConnectedPage:render()
 				transparency = self.props.transparency,
 				layoutOrder = 1,
 				onClick = self.props.onNavigateSettings,
+			}, {
+				Tip = e(Tooltip.Trigger, {
+					text = "View and modify plugin settings",
+				}),
 			}),
 
 			Connect = e(TextButton, {
@@ -123,6 +130,10 @@ function NotConnectedPage:render()
 				transparency = self.props.transparency,
 				layoutOrder = 2,
 				onClick = self.props.onConnect,
+			}, {
+				Tip = e(Tooltip.Trigger, {
+					text = "Connect to a Rojo sync server",
+				}),
 			}),
 
 			Layout = e("UIListLayout", {

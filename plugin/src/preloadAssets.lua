@@ -1,6 +1,7 @@
 local ContentProvider = game:GetService("ContentProvider")
 
-local Log = require(script.Parent.Parent.Log)
+local Packages = script.Parent.Parent.Packages
+local Log = require(Packages.Log)
 
 local Assets = require(script.Parent.Assets)
 
@@ -12,7 +13,7 @@ function gatherAssetUrlsRecursive(currentTable, currentUrls)
 		if typeof(value) == "string" then
 			table.insert(currentUrls, value)
 		elseif typeof(value) == "table" then
-			gatherAssetUrlsRecursive(value)
+			gatherAssetUrlsRecursive(value, currentUrls)
 		end
 	end
 

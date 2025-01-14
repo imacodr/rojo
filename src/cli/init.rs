@@ -13,13 +13,18 @@ use super::resolve_path;
 static MODEL_PROJECT: &str =
     include_str!("../../assets/default-model-project/default.project.json");
 static MODEL_README: &str = include_str!("../../assets/default-model-project/README.md");
-static MODEL_INIT: &str = include_str!("../../assets/default-model-project/src-init.lua");
+static MODEL_INIT: &str = include_str!("../../assets/default-model-project/src-init.luau");
 static MODEL_GIT_IGNORE: &str = include_str!("../../assets/default-model-project/gitignore.txt");
 
 static PLACE_PROJECT: &str =
     include_str!("../../assets/default-place-project/default.project.json");
 static PLACE_README: &str = include_str!("../../assets/default-place-project/README.md");
 static PLACE_GIT_IGNORE: &str = include_str!("../../assets/default-place-project/gitignore.txt");
+
+static PLUGIN_PROJECT: &str =
+    include_str!("../../assets/default-plugin-project/default.project.json");
+static PLUGIN_README: &str = include_str!("../../assets/default-plugin-project/README.md");
+static PLUGIN_GIT_IGNORE: &str = include_str!("../../assets/default-plugin-project/gitignore.txt");
 
 /// Initializes a new Rojo project.
 #[derive(Debug, Parser)]
@@ -28,7 +33,7 @@ pub struct InitCommand {
     #[clap(default_value = "")]
     pub path: PathBuf,
 
-    /// The kind of project to create, 'place' or 'model'. Defaults to place.
+    /// The kind of project to create, 'place', 'plugin', or 'model'. Defaults to place.
     #[clap(long, default_value = "place")]
     pub kind: InitKind,
 }
@@ -51,6 +56,7 @@ impl InitCommand {
         match self.kind {
             InitKind::Place => init_place(&base_path, project_params)?,
             InitKind::Model => init_model(&base_path, project_params)?,
+            InitKind::Plugin => init_plugin(&base_path, project_params)?,
         }
 
         println!("Created project successfully.");
@@ -65,8 +71,11 @@ pub enum InitKind {
     /// A place that contains a baseplate.
     Place,
 
-    /// An empty model, suitable for a library or plugin.
+    /// An empty model, suitable for a library.
     Model,
+
+    /// An empty plugin.
+    Plugin,
 }
 
 impl FromStr for InitKind {
@@ -76,8 +85,9 @@ impl FromStr for InitKind {
         match source {
             "place" => Ok(InitKind::Place),
             "model" => Ok(InitKind::Model),
+            "plugin" => Ok(InitKind::Plugin),
             _ => Err(format_err!(
-                "Invalid init kind '{}'. Valid kinds are: place, model",
+                "Invalid init kind '{}'. Valid kinds are: place, model, plugin",
                 source
             )),
         }
@@ -106,17 +116,17 @@ fn init_place(base_path: &Path, project_params: ProjectParams) -> anyhow::Result
     fs::create_dir_all(src.join(&src_client))?;
 
     write_if_not_exists(
-        &src_shared.join("Hello.lua"),
+        &src_shared.join("Hello.luau"),
         "return function()\n\tprint(\"Hello, world!\")\nend",
     )?;
 
     write_if_not_exists(
-        &src_server.join("init.server.lua"),
+        &src_server.join("init.server.luau"),
         "print(\"Hello world, from server!\")",
     )?;
 
     write_if_not_exists(
-        &src_client.join("init.client.lua"),
+        &src_client.join("init.client.luau"),
         "print(\"Hello world, from client!\")",
     )?;
 
@@ -139,9 +149,32 @@ fn init_model(base_path: &Path, project_params: ProjectParams) -> anyhow::Result
     fs::create_dir_all(&src)?;
 
     let init = project_params.render_template(MODEL_INIT);
-    write_if_not_exists(&src.join("init.lua"), &init)?;
+    write_if_not_exists(&src.join("init.luau"), &init)?;
 
     let git_ignore = project_params.render_template(MODEL_GIT_IGNORE);
+    try_git_init(base_path, &git_ignore)?;
+
+    Ok(())
+}
+
+fn init_plugin(base_path: &Path, project_params: ProjectParams) -> anyhow::Result<()> {
+    println!("Creating new plugin project '{}'", project_params.name);
+
+    let project_file = project_params.render_template(PLUGIN_PROJECT);
+    try_create_project(base_path, &project_file)?;
+
+    let readme = project_params.render_template(PLUGIN_README);
+    write_if_not_exists(&base_path.join("README.md"), &readme)?;
+
+    let src = base_path.join("src");
+    fs::create_dir_all(&src)?;
+
+    write_if_not_exists(
+        &src.join("init.server.luau"),
+        "print(\"Hello world, from plugin!\")\n",
+    )?;
+
+    let git_ignore = project_params.render_template(PLUGIN_GIT_IGNORE);
     try_git_init(base_path, &git_ignore)?;
 
     Ok(())
@@ -184,7 +217,7 @@ fn try_git_init(path: &Path, git_ignore: &str) -> Result<(), anyhow::Error> {
 /// already inside a Git repository.
 fn should_git_init(path: &Path) -> bool {
     let result = Command::new("git")
-        .args(&["rev-parse", "--is-inside-work-tree"])
+        .args(["rev-parse", "--is-inside-work-tree"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .current_dir(path)

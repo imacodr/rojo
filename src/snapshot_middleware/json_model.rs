@@ -2,22 +2,21 @@ use std::{borrow::Cow, collections::HashMap, path::Path, str};
 
 use anyhow::Context;
 use memofs::Vfs;
+use rbx_dom_weak::types::{Attributes, Ref};
 use serde::Deserialize;
 
 use crate::{
     resolution::UnresolvedValue,
     snapshot::{InstanceContext, InstanceSnapshot},
+    RojoRef,
 };
-
-use super::util::PathExt;
 
 pub fn snapshot_json_model(
     context: &InstanceContext,
     vfs: &Vfs,
     path: &Path,
+    name: &str,
 ) -> anyhow::Result<Option<InstanceSnapshot>> {
-    let name = path.file_name_trim_end(".model.json")?;
-
     let contents = vfs.read(path)?;
     let contents_str = str::from_utf8(&contents)
         .with_context(|| format!("File was not valid UTF-8: {}", path.display()))?;
@@ -43,6 +42,8 @@ pub fn snapshot_json_model(
 
     instance.name = Some(name.to_owned());
 
+    let id = instance.id.take().map(RojoRef::new);
+
     let mut snapshot = instance
         .into_snapshot()
         .with_context(|| format!("Could not load JSON model: {}", path.display()))?;
@@ -51,7 +52,8 @@ pub fn snapshot_json_model(
         .metadata
         .instigating_source(path)
         .relevant_paths(vec![path.to_path_buf()])
-        .context(context);
+        .context(context)
+        .specified_id(id);
 
     Ok(Some(snapshot))
 }
@@ -59,11 +61,17 @@ pub fn snapshot_json_model(
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct JsonModel {
+    #[serde(rename = "$schema", skip_serializing_if = "Option::is_none")]
+    schema: Option<String>,
+
     #[serde(alias = "Name")]
     name: Option<String>,
 
     #[serde(alias = "ClassName")]
     class_name: String,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    id: Option<String>,
 
     #[serde(
         alias = "Children",
@@ -78,6 +86,9 @@ struct JsonModel {
         skip_serializing_if = "HashMap::is_empty"
     )]
     properties: HashMap<String, UnresolvedValue>,
+
+    #[serde(default = "HashMap::new", skip_serializing_if = "HashMap::is_empty")]
+    attributes: HashMap<String, UnresolvedValue>,
 }
 
 impl JsonModel {
@@ -96,8 +107,19 @@ impl JsonModel {
             properties.insert(key, value);
         }
 
+        if !self.attributes.is_empty() {
+            let mut attributes = Attributes::new();
+
+            for (key, unresolved) in self.attributes {
+                let value = unresolved.resolve_unambiguous()?;
+                attributes.insert(key, value);
+            }
+
+            properties.insert("Attributes".into(), attributes.into());
+        }
+
         Ok(InstanceSnapshot {
-            snapshot_id: None,
+            snapshot_id: Ref::none(),
             metadata: Default::default(),
             name: Cow::Owned(name),
             class_name: Cow::Owned(class_name),
@@ -143,6 +165,7 @@ mod test {
             &InstanceContext::default(),
             &vfs,
             Path::new("/foo.model.json"),
+            "foo",
         )
         .unwrap()
         .unwrap();
@@ -180,6 +203,7 @@ mod test {
             &InstanceContext::default(),
             &vfs,
             Path::new("/foo.model.json"),
+            "foo",
         )
         .unwrap()
         .unwrap();

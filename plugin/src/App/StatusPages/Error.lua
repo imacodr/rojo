@@ -1,15 +1,16 @@
-local TextService = game:GetService("TextService")
-
 local Rojo = script:FindFirstAncestor("Rojo")
 local Plugin = Rojo.Plugin
+local Packages = Rojo.Packages
 
-local Roact = require(Rojo.Roact)
+local Roact = require(Packages.Roact)
 
 local Theme = require(Plugin.App.Theme)
+local getTextBoundsAsync = require(Plugin.App.getTextBoundsAsync)
 
 local TextButton = require(Plugin.App.Components.TextButton)
 local BorderedContainer = require(Plugin.App.Components.BorderedContainer)
 local ScrollingFrame = require(Plugin.App.Components.ScrollingFrame)
+local Tooltip = require(Plugin.App.Components.Tooltip)
 
 local e = Roact.createElement
 
@@ -22,64 +23,74 @@ function Error:init()
 end
 
 function Error:render()
-	return e(BorderedContainer, {
-		size = Roact.joinBindings({
-			containerSize = self.props.containerSize,
-			contentSize = self.contentSize,
-		}):map(function(values)
-			local maximumSize = values.containerSize
-			maximumSize -= Vector2.new(14, 14) * 2 -- Page padding
-			maximumSize -= Vector2.new(0, 34 + 10) -- Buttons and spacing
+	return Theme.with(function(theme)
+		return e(BorderedContainer, {
+			size = Roact.joinBindings({
+				containerSize = self.props.containerSize,
+				contentSize = self.contentSize,
+			}):map(function(values)
+				local maximumSize = values.containerSize
+				maximumSize -= Vector2.new(14, 14) * 2 -- Page padding
+				maximumSize -= Vector2.new(0, 34 + 10) -- Buttons and spacing
 
-			local outerSize = values.contentSize + ERROR_PADDING * 2
+				local outerSize = values.contentSize + ERROR_PADDING * 2
 
-			return UDim2.new(1, 0, 0, math.min(outerSize.Y, maximumSize.Y))
-		end),
-		transparency = self.props.transparency,
-	}, {
-		ScrollingFrame = e(ScrollingFrame, {
-			size = UDim2.new(1, 0, 1, 0),
-			contentSize = self.contentSize:map(function(value)
-				return value + ERROR_PADDING * 2
+				return UDim2.new(1, 0, 0, math.min(outerSize.Y, maximumSize.Y))
 			end),
 			transparency = self.props.transparency,
-
-			[Roact.Change.AbsoluteSize] = function(object)
-				local containerSize = object.AbsoluteSize - ERROR_PADDING * 2
-
-				local textBounds = TextService:GetTextSize(
-					self.props.errorMessage, 16, Enum.Font.Code,
-					Vector2.new(containerSize.X, math.huge)
-				)
-
-				self.setContentSize(Vector2.new(containerSize.X, textBounds.Y))
-			end,
 		}, {
-			ErrorMessage = Theme.with(function(theme)
-				return e("TextLabel", {
+			ScrollingFrame = e(ScrollingFrame, {
+				size = UDim2.new(1, 0, 1, 0),
+				contentSize = self.contentSize:map(function(value)
+					return value + ERROR_PADDING * 2
+				end),
+				transparency = self.props.transparency,
+
+				[Roact.Change.AbsoluteSize] = function(object)
+					local containerSize = object.AbsoluteSize - ERROR_PADDING * 2
+
+					local textBounds = getTextBoundsAsync(
+						self.props.errorMessage,
+						theme.Font.Code,
+						theme.TextSize.Code,
+						containerSize.X
+					)
+
+					self.setContentSize(Vector2.new(containerSize.X, textBounds.Y))
+				end,
+			}, {
+				ErrorMessage = e("TextBox", {
+					[Roact.Event.InputBegan] = function(rbx, input)
+						if input.UserInputType ~= Enum.UserInputType.MouseButton1 then
+							return
+						end
+						rbx.SelectionStart = 0
+						rbx.CursorPosition = #rbx.Text + 1
+					end,
+
 					Text = self.props.errorMessage,
-					Font = Enum.Font.Code,
-					TextSize = 16,
+					TextEditable = false,
+					FontFace = theme.Font.Code,
+					TextSize = theme.TextSize.Code,
 					TextColor3 = theme.ErrorColor,
 					TextXAlignment = Enum.TextXAlignment.Left,
 					TextYAlignment = Enum.TextYAlignment.Top,
 					TextTransparency = self.props.transparency,
 					TextWrapped = true,
-
-					Size = UDim2.new(1, 0, 1, 0),
-
+					ClearTextOnFocus = false,
 					BackgroundTransparency = 1,
-				})
-			end),
+					Size = UDim2.new(1, 0, 1, 0),
+				}),
 
-			Padding = e("UIPadding", {
-				PaddingLeft = UDim.new(0, ERROR_PADDING.X),
-				PaddingRight = UDim.new(0, ERROR_PADDING.X),
-				PaddingTop = UDim.new(0, ERROR_PADDING.Y),
-				PaddingBottom = UDim.new(0, ERROR_PADDING.Y),
+				Padding = e("UIPadding", {
+					PaddingLeft = UDim.new(0, ERROR_PADDING.X),
+					PaddingRight = UDim.new(0, ERROR_PADDING.X),
+					PaddingTop = UDim.new(0, ERROR_PADDING.Y),
+					PaddingBottom = UDim.new(0, ERROR_PADDING.Y),
+				}),
 			}),
-		}),
-	})
+		})
+	end)
 end
 
 local ErrorPage = Roact.Component:extend("ErrorPage")
@@ -115,6 +126,10 @@ function ErrorPage:render()
 				transparency = self.props.transparency,
 				layoutOrder = 1,
 				onClick = self.props.onClose,
+			}, {
+				Tip = e(Tooltip.Trigger, {
+					text = "Dismiss message",
+				}),
 			}),
 
 			Layout = e("UIListLayout", {

@@ -1,8 +1,14 @@
+local ChangeHistoryService = game:GetService("ChangeHistoryService")
+local Players = game:GetService("Players")
+local ServerStorage = game:GetService("ServerStorage")
+local RunService = game:GetService("RunService")
+
 local Rojo = script:FindFirstAncestor("Rojo")
 local Plugin = Rojo.Plugin
+local Packages = Rojo.Packages
 
-local Roact = require(Rojo.Roact)
-local Log = require(Rojo.Log)
+local Roact = require(Packages.Roact)
+local Log = require(Packages.Log)
 
 local Assets = require(Plugin.Assets)
 local Version = require(Plugin.Version)
@@ -12,12 +18,17 @@ local strict = require(Plugin.strict)
 local Dictionary = require(Plugin.Dictionary)
 local ServeSession = require(Plugin.ServeSession)
 local ApiContext = require(Plugin.ApiContext)
+local PatchSet = require(Plugin.PatchSet)
+local PatchTree = require(Plugin.PatchTree)
 local preloadAssets = require(Plugin.preloadAssets)
 local soundPlayer = require(Plugin.soundPlayer)
+local ignorePlaceIds = require(Plugin.ignorePlaceIds)
+local timeUtil = require(Plugin.timeUtil)
 local Theme = require(script.Theme)
 
 local Page = require(script.Page)
 local Notifications = require(script.Notifications)
+local Tooltip = require(script.Components.Tooltip)
 local StudioPluginAction = require(script.Components.Studio.StudioPluginAction)
 local StudioToolbar = require(script.Components.Studio.StudioToolbar)
 local StudioToggleButton = require(script.Components.Studio.StudioToggleButton)
@@ -29,6 +40,7 @@ local AppStatus = strict("AppStatus", {
 	NotConnected = "NotConnected",
 	Settings = "Settings",
 	Connecting = "Connecting",
+	Confirming = "Confirming",
 	Connected = "Connected",
 	Error = "Error",
 })
@@ -40,69 +52,473 @@ local App = Roact.Component:extend("App")
 function App:init()
 	preloadAssets()
 
-	self.host, self.setHost = Roact.createBinding("")
-	self.port, self.setPort = Roact.createBinding("")
+	local priorSyncInfo = self:getPriorSyncInfo()
+	self.host, self.setHost = Roact.createBinding(priorSyncInfo.host or "")
+	self.port, self.setPort = Roact.createBinding(priorSyncInfo.port or "")
+
+	self.confirmationBindable = Instance.new("BindableEvent")
+	self.confirmationEvent = self.confirmationBindable.Event
+	self.knownProjects = {}
+	self.notifId = 0
+
+	self.waypointConnection = ChangeHistoryService.OnUndo:Connect(function(action: string)
+		if not string.find(action, "^Rojo: Patch") then
+			return
+		end
+
+		local undoConnection, redoConnection = nil, nil
+		local function cleanup()
+			undoConnection:Disconnect()
+			redoConnection:Disconnect()
+		end
+
+		Log.warn(
+			string.format(
+				"You've undone '%s'.\nIf this was not intended, please Redo in the topbar or with Ctrl/⌘+Y.",
+				action
+			)
+		)
+		local dismissNotif = self:addNotification(
+			string.format("You've undone '%s'.\nIf this was not intended, please restore.", action),
+			10,
+			{
+				Restore = {
+					text = "Restore",
+					style = "Solid",
+					layoutOrder = 1,
+					onClick = function(notification)
+						cleanup()
+						notification:dismiss()
+						ChangeHistoryService:Redo()
+					end,
+				},
+				Dismiss = {
+					text = "Dismiss",
+					style = "Bordered",
+					layoutOrder = 2,
+					onClick = function(notification)
+						cleanup()
+						notification:dismiss()
+					end,
+				},
+			}
+		)
+
+		undoConnection = ChangeHistoryService.OnUndo:Once(function()
+			-- Our notif is now out of date- redoing will not restore the patch
+			-- since we've undone even further. Dismiss the notif.
+			cleanup()
+			dismissNotif()
+		end)
+		redoConnection = ChangeHistoryService.OnRedo:Once(function(redoneAction: string)
+			if redoneAction == action then
+				-- The user has restored the patch, so we can dismiss the notif
+				cleanup()
+				dismissNotif()
+			end
+		end)
+	end)
+
+	self.disconnectUpdatesCheckChanged = Settings:onChanged("checkForUpdates", function()
+		self:checkForUpdates()
+	end)
+	self.disconnectPrereleasesCheckChanged = Settings:onChanged("checkForPrereleases", function()
+		self:checkForUpdates()
+	end)
 
 	self:setState({
 		appStatus = AppStatus.NotConnected,
 		guiEnabled = false,
+		confirmData = {},
+		patchData = {
+			patch = PatchSet.newEmpty(),
+			unapplied = PatchSet.newEmpty(),
+			timestamp = os.time(),
+		},
 		notifications = {},
 		toolbarIcon = Assets.Images.PluginButton,
 	})
+
+	if RunService:IsEdit() then
+		self:checkForUpdates()
+
+		if
+			Settings:get("syncReminder")
+			and self.serveSession == nil
+			and self:getPriorSyncInfo().timestamp ~= nil
+			and (self:isSyncLockAvailable())
+		then
+			local syncInfo = self:getPriorSyncInfo()
+			local timeSinceSync = timeUtil.elapsedToText(os.time() - syncInfo.timestamp)
+			local syncDetail = if syncInfo.projectName
+				then `project '{syncInfo.projectName}'`
+				else `{syncInfo.host or Config.defaultHost}:{syncInfo.port or Config.defaultPort}`
+
+			self:addNotification(
+				`You synced {syncDetail} to this place {timeSinceSync}. Would you like to reconnect?`,
+				300,
+				{
+					Connect = {
+						text = "Connect",
+						style = "Solid",
+						layoutOrder = 1,
+						onClick = function(notification)
+							notification:dismiss()
+							self:startSession()
+						end,
+					},
+					Dismiss = {
+						text = "Dismiss",
+						style = "Bordered",
+						layoutOrder = 2,
+						onClick = function(notification)
+							notification:dismiss()
+						end,
+					},
+				}
+			)
+		end
+	end
+
+	if self:isAutoConnectPlaytestServerAvailable() then
+		self:useRunningConnectionInfo()
+		self:startSession()
+	end
+	self.autoConnectPlaytestServerListener = Settings:onChanged("autoConnectPlaytestServer", function(enabled)
+		if enabled then
+			if self:isAutoConnectPlaytestServerWriteable() and self.serveSession ~= nil then
+				-- Write the existing session
+				local baseUrl = self.serveSession.__apiContext.__baseUrl
+				self:setRunningConnectionInfo(baseUrl)
+			end
+		else
+			self:clearRunningConnectionInfo()
+		end
+	end)
 end
 
-function App:addNotification(text: string, timeout: number?)
+function App:willUnmount()
+	self.waypointConnection:Disconnect()
+	self.confirmationBindable:Destroy()
+
+	self.disconnectUpdatesCheckChanged()
+	self.disconnectPrereleasesCheckChanged()
+
+	self.autoConnectPlaytestServerListener()
+	self:clearRunningConnectionInfo()
+end
+
+function App:addNotification(
+	text: string,
+	timeout: number?,
+	actions: { [string]: { text: string, style: string, layoutOrder: number, onClick: (any) -> () } }?
+)
 	if not Settings:get("showNotifications") then
 		return
 	end
 
+	self.notifId += 1
+	local id = self.notifId
+
 	local notifications = table.clone(self.state.notifications)
-	table.insert(notifications, {
+	notifications[id] = {
 		text = text,
 		timestamp = DateTime.now().UnixTimestampMillis,
 		timeout = timeout or 3,
+		actions = actions,
+	}
+
+	self:setState({
+		notifications = notifications,
 	})
+
+	return function()
+		self:closeNotification(id)
+	end
+end
+
+function App:closeNotification(id: number)
+	if not self.state.notifications[id] then
+		return
+	end
+
+	local notifications = table.clone(self.state.notifications)
+	notifications[id] = nil
 
 	self:setState({
 		notifications = notifications,
 	})
 end
 
-function App:closeNotification(index: number)
-	local notifications = table.clone(self.state.notifications)
-	table.remove(notifications, index)
+function App:checkForUpdates()
+	if not Settings:get("checkForUpdates") then
+		return
+	end
 
-	self:setState({
-		notifications = notifications,
+	local isLocalInstall = string.find(debug.traceback(), "\n[^\n]-user_.-$") ~= nil
+	local latestCompatibleVersion = Version.retrieveLatestCompatible({
+		version = Config.version,
+		includePrereleases = isLocalInstall and Settings:get("checkForPrereleases"),
 	})
+	if not latestCompatibleVersion then
+		return
+	end
+
+	self:addNotification(
+		string.format(
+			"A newer compatible version of Rojo, %s, was published %s! Go to the Rojo releases page to learn more.",
+			Version.display(latestCompatibleVersion.version),
+			timeUtil.elapsedToText(DateTime.now().UnixTimestamp - latestCompatibleVersion.publishedUnixTimestamp)
+		),
+		500,
+		{
+			Dismiss = {
+				text = "Dismiss",
+				style = "Bordered",
+				layoutOrder = 2,
+				onClick = function(notification)
+					notification:dismiss()
+				end,
+			},
+		}
+	)
+end
+
+function App:getPriorSyncInfo(): { host: string?, port: string?, projectName: string?, timestamp: number? }
+	local priorSyncInfos = Settings:get("priorEndpoints")
+	if not priorSyncInfos then
+		return {}
+	end
+
+	local id = tostring(game.PlaceId)
+	if ignorePlaceIds[id] then
+		return {}
+	end
+
+	return priorSyncInfos[id] or {}
+end
+
+function App:setPriorSyncInfo(host: string, port: string, projectName: string)
+	local priorSyncInfos = Settings:get("priorEndpoints")
+	if not priorSyncInfos then
+		priorSyncInfos = {}
+	end
+
+	local now = os.time()
+
+	-- Clear any stale saves to avoid disc bloat
+	for placeId, syncInfo in priorSyncInfos do
+		if now - (syncInfo.timestamp or now) > 12_960_000 then
+			priorSyncInfos[placeId] = nil
+			Log.trace("Cleared stale saved endpoint for {}", placeId)
+		end
+	end
+
+	local id = tostring(game.PlaceId)
+	if ignorePlaceIds[id] then
+		return
+	end
+
+	priorSyncInfos[id] = {
+		host = if host ~= Config.defaultHost then host else nil,
+		port = if port ~= Config.defaultPort then port else nil,
+		projectName = projectName,
+		timestamp = now,
+	}
+	Log.trace("Saved last used endpoint for {}", game.PlaceId)
+
+	Settings:set("priorEndpoints", priorSyncInfos)
 end
 
 function App:getHostAndPort()
 	local host = self.host:getValue()
 	local port = self.port:getValue()
 
-	local host = if #host > 0 then host else Config.defaultHost
-	local port = if #port > 0 then port else Config.defaultPort
+	return if #host > 0 then host else Config.defaultHost, if #port > 0 then port else Config.defaultPort
+end
 
-	return host, port
+function App:isSyncLockAvailable()
+	if #Players:GetPlayers() == 0 then
+		-- Team Create is not active, so no one can be holding the lock
+		return true
+	end
+
+	local lock = ServerStorage:FindFirstChild("__Rojo_SessionLock")
+	if not lock then
+		-- No lock is made yet, so it is available
+		return true
+	end
+
+	if lock.Value and lock.Value ~= Players.LocalPlayer and lock.Value.Parent then
+		-- Someone else is holding the lock
+		return false, lock.Value
+	end
+
+	-- The lock exists, but is not claimed
+	return true
+end
+
+function App:claimSyncLock()
+	if #Players:GetPlayers() == 0 then
+		Log.trace("Skipping sync lock because this isn't in Team Create")
+		return true
+	end
+
+	local isAvailable, priorOwner = self:isSyncLockAvailable()
+	if not isAvailable then
+		Log.trace("Skipping sync lock because it is already claimed")
+		return false, priorOwner
+	end
+
+	local lock = ServerStorage:FindFirstChild("__Rojo_SessionLock")
+	if not lock then
+		lock = Instance.new("ObjectValue")
+		lock.Name = "__Rojo_SessionLock"
+		lock.Archivable = false
+		lock.Value = Players.LocalPlayer
+		lock.Parent = ServerStorage
+		Log.trace("Created and claimed sync lock")
+		return true
+	end
+
+	lock.Value = Players.LocalPlayer
+	Log.trace("Claimed existing sync lock")
+	return true
+end
+
+function App:releaseSyncLock()
+	local lock = ServerStorage:FindFirstChild("__Rojo_SessionLock")
+	if not lock then
+		Log.trace("No sync lock found, assumed released")
+		return
+	end
+
+	if lock.Value == Players.LocalPlayer then
+		lock.Value = nil
+		Log.trace("Released sync lock")
+		return
+	end
+
+	Log.trace("Could not relase sync lock because it is owned by {}", lock.Value)
+end
+
+function App:isAutoConnectPlaytestServerAvailable()
+	return RunService:IsRunMode()
+		and RunService:IsServer()
+		and Settings:get("autoConnectPlaytestServer")
+		and workspace:GetAttribute("__Rojo_ConnectionUrl")
+end
+
+function App:isAutoConnectPlaytestServerWriteable()
+	return RunService:IsEdit() and Settings:get("autoConnectPlaytestServer")
+end
+
+function App:setRunningConnectionInfo(baseUrl: string)
+	if not self:isAutoConnectPlaytestServerWriteable() then
+		return
+	end
+
+	Log.trace("Setting connection info for play solo auto-connect")
+	workspace:SetAttribute("__Rojo_ConnectionUrl", baseUrl)
+end
+
+function App:clearRunningConnectionInfo()
+	if not RunService:IsEdit() then
+		-- Only write connection info from edit mode
+		return
+	end
+
+	Log.trace("Clearing connection info for play solo auto-connect")
+	workspace:SetAttribute("__Rojo_ConnectionUrl", nil)
+end
+
+function App:useRunningConnectionInfo()
+	local connectionInfo = workspace:GetAttribute("__Rojo_ConnectionUrl")
+	if not connectionInfo then
+		return
+	end
+
+	Log.trace("Using connection info for play solo auto-connect")
+	local host, port = string.match(connectionInfo, "^(.+):(.-)$")
+
+	self.setHost(host)
+	self.setPort(port)
 end
 
 function App:startSession()
+	local claimedLock, priorOwner = self:claimSyncLock()
+	if not claimedLock then
+		local msg = string.format("Could not sync because user '%s' is already syncing", tostring(priorOwner))
+
+		Log.warn(msg)
+		self:addNotification(msg, 10)
+		self:setState({
+			appStatus = AppStatus.Error,
+			errorMessage = msg,
+			toolbarIcon = Assets.Images.PluginButtonWarning,
+		})
+
+		return
+	end
+
 	local host, port = self:getHostAndPort()
 
-	local sessionOptions = {
-		openScriptsExternally = Settings:get("openScriptsExternally"),
-		twoWaySync = Settings:get("twoWaySync"),
-	}
-
-	local baseUrl = ("http://%s:%s"):format(host, port)
+	local baseUrl = if string.find(host, "^https?://")
+		then string.format("%s:%s", host, port)
+		else string.format("http://%s:%s", host, port)
 	local apiContext = ApiContext.new(baseUrl)
 
 	local serveSession = ServeSession.new({
 		apiContext = apiContext,
-		openScriptsExternally = sessionOptions.openScriptsExternally,
-		twoWaySync = sessionOptions.twoWaySync,
+		twoWaySync = Settings:get("twoWaySync"),
 	})
+
+	self.cleanupPrecommit = serveSession.__reconciler:hookPrecommit(function(patch, instanceMap)
+		-- Build new tree for patch
+		self:setState({
+			patchTree = PatchTree.build(patch, instanceMap, { "Property", "Old", "New" }),
+		})
+	end)
+	self.cleanupPostcommit = serveSession.__reconciler:hookPostcommit(function(patch, instanceMap, unappliedPatch)
+		-- Update tree with unapplied metadata
+		self:setState(function(prevState)
+			return {
+				patchTree = PatchTree.updateMetadata(prevState.patchTree, patch, instanceMap, unappliedPatch),
+			}
+		end)
+	end)
+
+	serveSession:hookPostcommit(function(patch, _instanceMap, unapplied)
+		local now = DateTime.now().UnixTimestamp
+		local old = self.state.patchData
+
+		if PatchSet.isEmpty(patch) then
+			-- Ignore empty patch, but update timestamp
+			self:setState({
+				patchData = {
+					patch = old.patch,
+					unapplied = old.unapplied,
+					timestamp = now,
+				},
+			})
+			return
+		end
+
+		if now - old.timestamp < 2 then
+			-- Patches that apply in the same second are
+			-- considered to be part of the same change for human clarity
+			patch = PatchSet.assign(PatchSet.newEmpty(), old.patch, patch)
+			unapplied = PatchSet.assign(PatchSet.newEmpty(), old.unapplied, unapplied)
+		end
+
+		self:setState({
+			patchData = {
+				patch = patch,
+				unapplied = unapplied,
+				timestamp = now,
+			},
+		})
+	end)
 
 	serveSession:onStatusChanged(function(status, details)
 		if status == ServeSession.Status.Connecting then
@@ -112,6 +528,10 @@ function App:startSession()
 			})
 			self:addNotification("Connecting to session...")
 		elseif status == ServeSession.Status.Connected then
+			self.knownProjects[details] = true
+			self:setPriorSyncInfo(host, port, details)
+			self:setRunningConnectionInfo(baseUrl)
+
 			local address = ("%s:%s"):format(host, port)
 			self:setState({
 				appStatus = AppStatus.Connected,
@@ -122,6 +542,15 @@ function App:startSession()
 			self:addNotification(string.format("Connected to session '%s' at %s.", details, address), 5)
 		elseif status == ServeSession.Status.Disconnected then
 			self.serveSession = nil
+			self:releaseSyncLock()
+			self:clearRunningConnectionInfo()
+			self:setState({
+				patchData = {
+					patch = PatchSet.newEmpty(),
+					unapplied = PatchSet.newEmpty(),
+					timestamp = os.time(),
+				},
+			})
 
 			-- Details being present indicates that this
 			-- disconnection was from an error.
@@ -144,6 +573,90 @@ function App:startSession()
 		end
 	end)
 
+	serveSession:setConfirmCallback(function(instanceMap, patch, serverInfo)
+		if PatchSet.isEmpty(patch) then
+			Log.trace("Accepting patch without confirmation because it is empty")
+			return "Accept"
+		end
+
+		-- Play solo auto-connect does not require confirmation
+		if self:isAutoConnectPlaytestServerAvailable() then
+			Log.trace("Accepting patch without confirmation because play solo auto-connect is enabled")
+			return "Accept"
+		end
+
+		local confirmationBehavior = Settings:get("confirmationBehavior")
+		if confirmationBehavior == "Initial" then
+			-- Only confirm if we haven't synced this project yet this session
+			if self.knownProjects[serverInfo.projectName] then
+				Log.trace(
+					"Accepting patch without confirmation because project has already been connected and behavior is set to Initial"
+				)
+				return "Accept"
+			end
+		elseif confirmationBehavior == "Large Changes" then
+			-- Only confirm if the patch impacts many instances
+			if PatchSet.countInstances(patch) < Settings:get("largeChangesConfirmationThreshold") then
+				Log.trace(
+					"Accepting patch without confirmation because patch is small and behavior is set to Large Changes"
+				)
+				return "Accept"
+			end
+		elseif confirmationBehavior == "Unlisted PlaceId" then
+			-- Only confirm if the current placeId is not in the servePlaceIds allowlist
+			if serverInfo.expectedPlaceIds then
+				local isListed = table.find(serverInfo.expectedPlaceIds, game.PlaceId) ~= nil
+				if isListed then
+					Log.trace(
+						"Accepting patch without confirmation because placeId is listed and behavior is set to Unlisted PlaceId"
+					)
+					return "Accept"
+				end
+			end
+		elseif confirmationBehavior == "Never" then
+			Log.trace("Accepting patch without confirmation because behavior is set to Never")
+			return "Accept"
+		end
+
+		-- The datamodel name gets overwritten by Studio, making confirmation of it intrusive
+		-- and unnecessary. This special case allows it to be accepted without confirmation.
+		if
+			PatchSet.hasAdditions(patch) == false
+			and PatchSet.hasRemoves(patch) == false
+			and PatchSet.containsOnlyInstance(patch, instanceMap, game)
+		then
+			local datamodelUpdates = PatchSet.getUpdateForInstance(patch, instanceMap, game)
+			if
+				datamodelUpdates ~= nil
+				and next(datamodelUpdates.changedProperties) == nil
+				and datamodelUpdates.changedClassName == nil
+			then
+				Log.trace("Accepting patch without confirmation because it only contains a datamodel name change")
+				return "Accept"
+			end
+		end
+
+		self:setState({
+			appStatus = AppStatus.Confirming,
+			confirmData = {
+				instanceMap = instanceMap,
+				patch = patch,
+				serverInfo = serverInfo,
+			},
+			toolbarIcon = Assets.Images.PluginButton,
+		})
+
+		self:addNotification(
+			string.format(
+				"Please accept%sor abort the initializing sync session.",
+				Settings:get("twoWaySync") and ", reject, " or " "
+			),
+			7
+		)
+
+		return self.confirmationEvent:Wait()
+	end)
+
 	serveSession:start()
 
 	self.serveSession = serveSession
@@ -161,6 +674,13 @@ function App:endSession()
 	self:setState({
 		appStatus = AppStatus.NotConnected,
 	})
+
+	if self.cleanupPrecommit ~= nil then
+		self.cleanupPrecommit()
+	end
+	if self.cleanupPostcommit ~= nil then
+		self.cleanupPostcommit()
+	end
 
 	Log.trace("Session terminated by user")
 end
@@ -183,101 +703,135 @@ function App:render()
 		value = self.props.plugin,
 	}, {
 		e(Theme.StudioProvider, nil, {
-			gui = e(StudioPluginGui, {
-				id = pluginName,
-				title = pluginName,
-				active = self.state.guiEnabled,
+			tooltip = e(Tooltip.Provider, nil, {
+				gui = e(StudioPluginGui, {
+					id = pluginName,
+					title = pluginName,
+					active = self.state.guiEnabled,
+					isEphemeral = false,
 
-				initDockState = Enum.InitialDockState.Right,
-				initEnabled = false,
-				overridePreviousState = false,
-				floatingSize = Vector2.new(300, 200),
-				minimumSize = Vector2.new(300, 200),
+					initDockState = Enum.InitialDockState.Right,
+					overridePreviousState = false,
+					floatingSize = Vector2.new(320, 210),
+					minimumSize = Vector2.new(300, 210),
 
-				zIndexBehavior = Enum.ZIndexBehavior.Sibling,
+					zIndexBehavior = Enum.ZIndexBehavior.Sibling,
 
-				onInitialState = function(initialState)
-					self:setState({
-						guiEnabled = initialState,
-					})
-				end,
-
-				onClose = function()
-					self:setState({
-						guiEnabled = false,
-					})
-				end,
-			}, {
-				NotConnectedPage = createPageElement(AppStatus.NotConnected, {
-					host = self.host,
-					onHostChange = self.setHost,
-					port = self.port,
-					onPortChange = self.setPort,
-
-					onConnect = function()
-						self:startSession()
-					end,
-
-					onNavigateSettings = function()
+					onInitialState = function(initialState)
 						self:setState({
-							appStatus = AppStatus.Settings,
+							guiEnabled = initialState,
 						})
 					end,
-				}),
-
-				Connecting = createPageElement(AppStatus.Connecting),
-
-				Connected = createPageElement(AppStatus.Connected, {
-					projectName = self.state.projectName,
-					address = self.state.address,
-
-					onDisconnect = function()
-						self:endSession()
-					end,
-				}),
-
-				Settings = createPageElement(AppStatus.Settings, {
-					onBack = function()
-						self:setState({
-							appStatus = AppStatus.NotConnected,
-						})
-					end,
-				}),
-
-				Error = createPageElement(AppStatus.Error, {
-					errorMessage = self.state.errorMessage,
 
 					onClose = function()
 						self:setState({
-							appStatus = AppStatus.NotConnected,
-							toolbarIcon = Assets.Images.PluginButton,
+							guiEnabled = false,
 						})
 					end,
+				}, {
+					Tooltips = e(Tooltip.Container, nil),
+
+					NotConnectedPage = createPageElement(AppStatus.NotConnected, {
+						host = self.host,
+						onHostChange = self.setHost,
+						port = self.port,
+						onPortChange = self.setPort,
+
+						onConnect = function()
+							self:startSession()
+						end,
+
+						onNavigateSettings = function()
+							self.backPage = AppStatus.NotConnected
+							self:setState({
+								appStatus = AppStatus.Settings,
+							})
+						end,
+					}),
+
+					ConfirmingPage = createPageElement(AppStatus.Confirming, {
+						confirmData = self.state.confirmData,
+						createPopup = not self.state.guiEnabled,
+
+						onAbort = function()
+							self.confirmationBindable:Fire("Abort")
+						end,
+						onAccept = function()
+							self.confirmationBindable:Fire("Accept")
+						end,
+						onReject = function()
+							self.confirmationBindable:Fire("Reject")
+						end,
+					}),
+
+					Connecting = createPageElement(AppStatus.Connecting),
+
+					Connected = createPageElement(AppStatus.Connected, {
+						projectName = self.state.projectName,
+						address = self.state.address,
+						patchTree = self.state.patchTree,
+						patchData = self.state.patchData,
+						serveSession = self.serveSession,
+
+						onDisconnect = function()
+							self:endSession()
+						end,
+
+						onNavigateSettings = function()
+							self.backPage = AppStatus.Connected
+							self:setState({
+								appStatus = AppStatus.Settings,
+							})
+						end,
+					}),
+
+					Settings = createPageElement(AppStatus.Settings, {
+						syncActive = self.serveSession ~= nil
+							and self.serveSession:getStatus() == ServeSession.Status.Connected,
+
+						onBack = function()
+							self:setState({
+								appStatus = self.backPage or AppStatus.NotConnected,
+							})
+						end,
+					}),
+
+					Error = createPageElement(AppStatus.Error, {
+						errorMessage = self.state.errorMessage,
+
+						onClose = function()
+							self:setState({
+								appStatus = AppStatus.NotConnected,
+								toolbarIcon = Assets.Images.PluginButton,
+							})
+						end,
+					}),
 				}),
 
-				Background = Theme.with(function(theme)
-					return e("Frame", {
-						Size = UDim2.new(1, 0, 1, 0),
-						BackgroundColor3 = theme.BackgroundColor,
-						ZIndex = 0,
-						BorderSizePixel = 0,
-					})
-				end),
-			}),
-
-			RojoNotifications = e("ScreenGui", {}, {
-				layout = e("UIListLayout", {
-					SortOrder = Enum.SortOrder.LayoutOrder,
-					HorizontalAlignment = Enum.HorizontalAlignment.Right,
-					VerticalAlignment = Enum.VerticalAlignment.Bottom,
-					Padding = UDim.new(0, 5),
-				}),
-				notifs = e(Notifications, {
-					soundPlayer = self.props.soundPlayer,
-					notifications = self.state.notifications,
-					onClose = function(index)
-						self:closeNotification(index)
-					end,
+				RojoNotifications = e("ScreenGui", {
+					ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+					ResetOnSpawn = false,
+					DisplayOrder = 100,
+				}, {
+					layout = e("UIListLayout", {
+						SortOrder = Enum.SortOrder.LayoutOrder,
+						HorizontalAlignment = Enum.HorizontalAlignment.Right,
+						VerticalAlignment = Enum.VerticalAlignment.Bottom,
+						Padding = UDim.new(0, 5),
+					}),
+					padding = e("UIPadding", {
+						PaddingTop = UDim.new(0, 5),
+						PaddingBottom = UDim.new(0, 5),
+						PaddingLeft = UDim.new(0, 5),
+						PaddingRight = UDim.new(0, 5),
+					}),
+					notifs = e(Notifications, {
+						soundPlayer = self.props.soundPlayer,
+						notifications = self.state.notifications,
+						onClose = function(id)
+							self:closeNotification(id)
+						end,
+					}),
 				}),
 			}),
 
@@ -290,7 +844,9 @@ function App:render()
 				onTriggered = function()
 					if self.serveSession == nil or self.serveSession:getStatus() == ServeSession.Status.NotStarted then
 						self:startSession()
-					elseif self.serveSession ~= nil and self.serveSession:getStatus() == ServeSession.Status.Connected then
+					elseif
+						self.serveSession ~= nil and self.serveSession:getStatus() == ServeSession.Status.Connected
+					then
 						self:endSession()
 					end
 				end,
@@ -338,7 +894,7 @@ function App:render()
 							}
 						end)
 					end,
-				})
+				}),
 			}),
 		}),
 	})

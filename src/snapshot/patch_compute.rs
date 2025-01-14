@@ -8,6 +8,8 @@ use std::{
 
 use rbx_dom_weak::types::{Ref, Variant};
 
+use crate::{RojoRef, REF_POINTER_ATTRIBUTE_PREFIX};
+
 use super::{
     patch::{PatchAdd, PatchSet, PatchUpdate},
     InstanceSnapshot, InstanceWithMeta, RojoTree,
@@ -26,10 +28,8 @@ pub fn compute_patch_set(snapshot: Option<InstanceSnapshot>, tree: &RojoTree, id
         // for all of the IDs that we know about so far.
         rewrite_refs_in_updates(&context, &mut patch_set.updated_instances);
         rewrite_refs_in_additions(&context, &mut patch_set.added_instances);
-    } else {
-        if id != tree.get_root_id() {
-            patch_set.removed_instances.push(id);
-        }
+    } else if id != tree.get_root_id() {
+        patch_set.removed_instances.push(id);
     }
 
     patch_set
@@ -79,15 +79,17 @@ fn compute_patch_set_internal(
     id: Ref,
     patch_set: &mut PatchSet,
 ) {
-    if let Some(snapshot_id) = snapshot.snapshot_id {
-        context.snapshot_id_to_instance_id.insert(snapshot_id, id);
+    if snapshot.snapshot_id.is_some() {
+        context
+            .snapshot_id_to_instance_id
+            .insert(snapshot.snapshot_id, id);
     }
 
     let instance = tree
         .get_instance(id)
         .expect("Instance did not exist in tree");
 
-    compute_property_patches(&mut snapshot, &instance, patch_set);
+    compute_property_patches(&mut snapshot, &instance, patch_set, tree);
     compute_children_patches(context, &mut snapshot, tree, id, patch_set);
 }
 
@@ -95,9 +97,12 @@ fn compute_property_patches(
     snapshot: &mut InstanceSnapshot,
     instance: &InstanceWithMeta,
     patch_set: &mut PatchSet,
+    tree: &RojoTree,
 ) {
     let mut visited_properties = HashSet::new();
     let mut changed_properties = HashMap::new();
+
+    let attribute_ref_properties = compute_ref_properties(snapshot, tree);
 
     let changed_name = if snapshot.name == instance.name() {
         None
@@ -138,6 +143,24 @@ fn compute_property_patches(
         }
 
         changed_properties.insert(name.clone(), None);
+    }
+
+    for (name, ref_value) in attribute_ref_properties {
+        match (&ref_value, instance.properties().get(&name)) {
+            (Some(referent), Some(instance_value)) => {
+                if referent != instance_value {
+                    changed_properties.insert(name, ref_value);
+                } else {
+                    changed_properties.remove(&name);
+                }
+            }
+            (Some(_), None) | (None, Some(_)) => {
+                changed_properties.insert(name, ref_value);
+            }
+            (None, None) => {
+                changed_properties.remove(&name);
+            }
+        }
     }
 
     if changed_properties.is_empty()
@@ -224,13 +247,57 @@ fn compute_children_patches(
     }
 }
 
+fn compute_ref_properties(
+    snapshot: &InstanceSnapshot,
+    tree: &RojoTree,
+) -> HashMap<String, Option<Variant>> {
+    let mut map = HashMap::new();
+    let attributes = match snapshot.properties.get("Attributes") {
+        Some(Variant::Attributes(attrs)) => attrs,
+        _ => return map,
+    };
+
+    for (attr_name, attr_value) in attributes.iter() {
+        let prop_name = match attr_name.strip_prefix(REF_POINTER_ATTRIBUTE_PREFIX) {
+            Some(str) => str,
+            None => continue,
+        };
+        let rojo_ref = match attr_value {
+            Variant::String(str) => RojoRef::new(str.clone()),
+            Variant::BinaryString(bytes) => {
+                if let Ok(str) = std::str::from_utf8(bytes.as_ref()) {
+                    RojoRef::new(str.to_string())
+                } else {
+                    log::warn!(
+                        "IDs specified by referent property attributes must be valid UTF-8 strings"
+                    );
+                    continue;
+                }
+            }
+            _ => {
+                log::warn!(
+                    "Attribute {attr_name} is of type {:?} when it was \
+                expected to be a String",
+                    attr_value.ty()
+                );
+                continue;
+            }
+        };
+        if let Some(target_id) = tree.get_specified_id(&rojo_ref) {
+            map.insert(prop_name.to_string(), Some(Variant::Ref(target_id)));
+        } else {
+            map.insert(prop_name.to_string(), None);
+        }
+    }
+
+    map
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
 
     use std::borrow::Cow;
-
-    use maplit::hashmap;
 
     /// This test makes sure that rewriting refs in instance update patches to
     /// instances that already exists works. We should be able to correlate the
@@ -246,10 +313,8 @@ mod test {
         // addition of a prop named Self, which is a self-referential Ref.
         let snapshot_id = Ref::new();
         let snapshot = InstanceSnapshot {
-            snapshot_id: Some(snapshot_id),
-            properties: hashmap! {
-                "Self".to_owned() => Variant::Ref(snapshot_id),
-            },
+            snapshot_id,
+            properties: [("Self".to_owned(), Variant::Ref(snapshot_id))].into(),
 
             metadata: Default::default(),
             name: Cow::Borrowed("foo"),
@@ -264,9 +329,7 @@ mod test {
                 id: root_id,
                 changed_name: None,
                 changed_class_name: None,
-                changed_properties: hashmap! {
-                    "Self".to_owned() => Some(Variant::Ref(root_id)),
-                },
+                changed_properties: [("Self".to_owned(), Some(Variant::Ref(root_id)))].into(),
                 changed_metadata: None,
             }],
             added_instances: Vec::new(),
@@ -288,13 +351,11 @@ mod test {
         // This patch describes the existing instance with a new child added.
         let snapshot_id = Ref::new();
         let snapshot = InstanceSnapshot {
-            snapshot_id: Some(snapshot_id),
+            snapshot_id,
             children: vec![InstanceSnapshot {
-                properties: hashmap! {
-                    "Self".to_owned() => Variant::Ref(snapshot_id),
-                },
+                properties: [("Self".to_owned(), Variant::Ref(snapshot_id))].into(),
 
-                snapshot_id: None,
+                snapshot_id: Ref::none(),
                 metadata: Default::default(),
                 name: Cow::Borrowed("child"),
                 class_name: Cow::Borrowed("child"),
@@ -313,11 +374,9 @@ mod test {
             added_instances: vec![PatchAdd {
                 parent_id: root_id,
                 instance: InstanceSnapshot {
-                    snapshot_id: None,
+                    snapshot_id: Ref::none(),
                     metadata: Default::default(),
-                    properties: hashmap! {
-                        "Self".to_owned() => Variant::Ref(root_id),
-                    },
+                    properties: [("Self".to_owned(), Variant::Ref(root_id))].into(),
                     name: Cow::Borrowed("child"),
                     class_name: Cow::Borrowed("child"),
                     children: Vec::new(),

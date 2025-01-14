@@ -23,10 +23,28 @@ local Assets = {
 		Icons = {
 			Close = "rbxassetid://6012985953",
 			Back = "rbxassetid://6017213752",
+			Reset = "rbxassetid://10142422327",
+			Expand = "rbxassetid://12045401097",
+			Warning = "rbxassetid://16571019891",
+			Debug = "rbxassetid://16588411361",
+			Checkmark = "rbxassetid://16571012729",
+			Exclamation = "rbxassetid://16571172190",
+			SyncSuccess = "rbxassetid://16565035221",
+			SyncWarning = "rbxassetid://16565325171",
+		},
+		Diff = {
+			Add = "rbxassetid://10434145835",
+			Remove = "rbxassetid://10434408368",
+			Edit = "rbxassetid://10434144680",
 		},
 		Checkbox = {
 			Active = "rbxassetid://6016251644",
 			Inactive = "rbxassetid://6016251963",
+			Locked = "rbxassetid://14011257320",
+		},
+		Dropdown = {
+			Arrow = "rbxassetid://10131770538",
+			Locked = "rbxassetid://14011257320",
 		},
 		Spinner = {
 			Foreground = "rbxassetid://3222731032",
@@ -42,7 +60,7 @@ local Assets = {
 			[32] = "rbxassetid://3088713341",
 			[64] = "rbxassetid://4918677124",
 			[128] = "rbxassetid://2600845734",
-			[500] = "rbxassetid://2609138523"
+			[500] = "rbxassetid://2609138523",
 		},
 	},
 	Sounds = {

@@ -1,6 +1,6 @@
-local t = require(script.Parent.Parent.t)
-
-local DevSettings = require(script.Parent.DevSettings)
+local Packages = script.Parent.Parent.Packages
+local t = require(Packages.t)
+local Settings = require(script.Parent.Settings)
 local strict = require(script.Parent.strict)
 
 local RbxId = t.string
@@ -56,17 +56,13 @@ local ApiSubscribeResponse = t.interface({
 })
 
 local ApiError = t.interface({
-	kind = t.union(
-		t.literal("NotFound"),
-		t.literal("BadRequest"),
-		t.literal("InternalError")
-	),
+	kind = t.union(t.literal("NotFound"), t.literal("BadRequest"), t.literal("InternalError")),
 	details = t.string,
 })
 
 local function ifEnabled(innerCheck)
 	return function(...)
-		if DevSettings:shouldTypecheck() then
+		if Settings:get("typecheckingEnabled") then
 			return innerCheck(...)
 		else
 			return true

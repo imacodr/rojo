@@ -22,6 +22,7 @@ trait FmtLua {
     }
 }
 
+#[allow(dead_code)]
 struct DisplayLua<T>(T);
 
 impl<T> fmt::Display for DisplayLua<T>
@@ -219,12 +220,30 @@ fn is_valid_ident_char(value: char) -> bool {
 }
 
 fn is_keyword(value: &str) -> bool {
-    match value {
-        "and" | "break" | "do" | "else" | "elseif" | "end" | "false" | "for" | "function"
-        | "if" | "in" | "local" | "nil" | "not" | "or" | "repeat" | "return" | "then" | "true"
-        | "until" | "while" => true,
-        _ => false,
-    }
+    matches!(
+        value,
+        "and"
+            | "break"
+            | "do"
+            | "else"
+            | "elseif"
+            | "end"
+            | "false"
+            | "for"
+            | "function"
+            | "if"
+            | "in"
+            | "local"
+            | "nil"
+            | "not"
+            | "or"
+            | "repeat"
+            | "return"
+            | "then"
+            | "true"
+            | "until"
+            | "while"
+    )
 }
 
 /// Tells whether the given string is a valid Lua identifier.

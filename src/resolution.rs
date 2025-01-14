@@ -1,12 +1,14 @@
 use std::borrow::Borrow;
 
-use anyhow::format_err;
+use anyhow::{bail, format_err};
 use rbx_dom_weak::types::{
-    Attributes, CFrame, Color3, Content, Enum, Matrix3, Tags, Variant, VariantType, Vector2,
-    Vector3,
+    Attributes, CFrame, Color3, Content, Enum, Font, MaterialColors, Matrix3, Tags, Variant,
+    VariantType, Vector2, Vector3,
 };
 use rbx_reflection::{DataType, PropertyDescriptor};
 use serde::{Deserialize, Serialize};
+
+use crate::REF_POINTER_ATTRIBUTE_PREFIX;
 
 /// A user-friendly version of `Variant` that supports specifying ambiguous
 /// values. Ambiguous values need a reflection database to be resolved to a
@@ -28,6 +30,13 @@ impl UnresolvedValue {
             UnresolvedValue::Ambiguous(partial) => partial.resolve(class_name, prop_name),
         }
     }
+
+    pub fn resolve_unambiguous(self) -> anyhow::Result<Variant> {
+        match self {
+            UnresolvedValue::FullyQualified(full) => Ok(full),
+            UnresolvedValue::Ambiguous(partial) => partial.resolve_unambiguous(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -42,6 +51,8 @@ pub enum AmbiguousValue {
     Array4([f64; 4]),
     Array12([f64; 12]),
     Attributes(Attributes),
+    Font(Font),
+    MaterialColors(MaterialColors),
 }
 
 impl AmbiguousValue {
@@ -132,6 +143,16 @@ impl AmbiguousValue {
 
                 (VariantType::Attributes, AmbiguousValue::Attributes(value)) => Ok(value.into()),
 
+                (VariantType::Font, AmbiguousValue::Font(value)) => Ok(value.into()),
+
+                (VariantType::MaterialColors, AmbiguousValue::MaterialColors(value)) => {
+                    Ok(value.into())
+                }
+
+                (VariantType::Ref, AmbiguousValue::String(_)) => Err(format_err!(
+                    "Cannot resolve Ref properties as a String.\
+                    Use an attribute named `{REF_POINTER_ATTRIBUTE_PREFIX}{prop_name}"
+                )),
                 (_, unresolved) => Err(format_err!(
                     "Wrong type of value for property {}.{}. Expected {:?}, got {}",
                     class_name,
@@ -148,6 +169,16 @@ impl AmbiguousValue {
         }
     }
 
+    pub fn resolve_unambiguous(self) -> anyhow::Result<Variant> {
+        match self {
+            AmbiguousValue::Bool(value) => Ok(value.into()),
+            AmbiguousValue::Number(value) => Ok(value.into()),
+            AmbiguousValue::String(value) => Ok(value.into()),
+
+            other => bail!("Cannot unambiguously resolve the value {other:?}"),
+        }
+    }
+
     fn describe(&self) -> &'static str {
         match self {
             AmbiguousValue::Bool(_) => "a bool",
@@ -159,6 +190,8 @@ impl AmbiguousValue {
             AmbiguousValue::Array4(_) => "an array of four numbers",
             AmbiguousValue::Array12(_) => "an array of twelve numbers",
             AmbiguousValue::Attributes(_) => "an object containing attributes",
+            AmbiguousValue::Font(_) => "an object describing a Font",
+            AmbiguousValue::MaterialColors(_) => "an object describing MaterialColors",
         }
     }
 }
@@ -218,12 +251,20 @@ mod test {
         unresolved.resolve(class, prop).unwrap()
     }
 
+    fn resolve_unambiguous(json_value: &str) -> Variant {
+        let unresolved: UnresolvedValue = serde_json::from_str(json_value).unwrap();
+        unresolved.resolve_unambiguous().unwrap()
+    }
+
     #[test]
     fn bools() {
         assert_eq!(resolve("BoolValue", "Value", "false"), Variant::Bool(false));
 
         // Script.Disabled is inherited from BaseScript
         assert_eq!(resolve("Script", "Disabled", "true"), Variant::Bool(true));
+
+        assert_eq!(resolve_unambiguous("false"), Variant::Bool(false));
+        assert_eq!(resolve_unambiguous("true"), Variant::Bool(true));
     }
 
     #[test]
@@ -247,6 +288,11 @@ mod test {
         //     resolve("Folder", "Tags", "\"a\\u0000b\\u0000c\""),
         //     Variant::BinaryString(b"a\0b\0c".to_vec().into()),
         // );
+
+        assert_eq!(
+            resolve_unambiguous("\"Hello world!\""),
+            Variant::String("Hello world!".into()),
+        );
     }
 
     #[test]
@@ -257,12 +303,14 @@ mod test {
         );
 
         assert_eq!(
-            resolve("Folder", "SourceAssetId", "532413"),
+            resolve("IntValue", "Value", "532413"),
             Variant::Int64(532413),
         );
 
         assert_eq!(resolve("Part", "Transparency", "1"), Variant::Float32(1.0));
         assert_eq!(resolve("NumberValue", "Value", "1"), Variant::Float64(1.0));
+
+        assert_eq!(resolve_unambiguous("12.5"), Variant::Float64(12.5));
     }
 
     #[test]
@@ -295,5 +343,47 @@ mod test {
             resolve("Lighting", "Technology", "\"Voxel\""),
             Variant::Enum(Enum::from_u32(1)),
         );
+    }
+
+    #[test]
+    fn font() {
+        use rbx_dom_weak::types::{FontStyle, FontWeight};
+
+        assert_eq!(
+            resolve(
+                "TextLabel",
+                "FontFace",
+                r#"{"family": "rbxasset://fonts/families/RobotoMono.json", "weight": "Thin", "style": "Normal"}"#
+            ),
+            Variant::Font(Font {
+                family: "rbxasset://fonts/families/RobotoMono.json".into(),
+                weight: FontWeight::Thin,
+                style: FontStyle::Normal,
+                cached_face_id: None,
+            })
+        )
+    }
+
+    #[test]
+    fn material_colors() {
+        use rbx_dom_weak::types::{Color3uint8, TerrainMaterials};
+
+        let mut material_colors = MaterialColors::new();
+        material_colors.set_color(TerrainMaterials::Grass, Color3uint8::new(10, 20, 30));
+        material_colors.set_color(TerrainMaterials::Asphalt, Color3uint8::new(40, 50, 60));
+        material_colors.set_color(TerrainMaterials::LeafyGrass, Color3uint8::new(255, 155, 55));
+
+        assert_eq!(
+            resolve(
+                "Terrain",
+                "MaterialColors",
+                r#"{
+                    "Grass": [10, 20, 30],
+                    "Asphalt": [40, 50, 60],
+                    "LeafyGrass": [255, 155, 55]
+                }"#
+            ),
+            Variant::MaterialColors(material_colors)
+        )
     }
 }

@@ -2,7 +2,7 @@
 source: src/snapshot_middleware/dir.rs
 expression: instance_snapshot
 ---
-snapshot_id: ~
+snapshot_id: "00000000000000000000000000000000"
 metadata:
   ignore_unknown_instances: false
   instigating_source:
@@ -16,7 +16,10 @@ metadata:
     - /foo/init.server.luau
     - /foo/init.client.lua
     - /foo/init.client.luau
-  context: {}
+    - /foo/init.csv
+  context:
+    emit_legacy_scripts: true
+  specified_id: ~
 name: foo
 class_name: Folder
 properties: {}

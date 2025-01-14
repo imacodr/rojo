@@ -77,7 +77,7 @@ pub fn snapshot_dir_no_meta(
 
     let relevant_paths = vec![
         path.to_path_buf(),
-        meta_path.clone(),
+        meta_path,
         // TODO: We shouldn't need to know about Lua existing in this
         // middleware. Should we figure out a way for that function to add
         // relevant paths to this middleware?
@@ -87,6 +87,7 @@ pub fn snapshot_dir_no_meta(
         path.join("init.server.luau"),
         path.join("init.client.lua"),
         path.join("init.client.luau"),
+        path.join("init.csv"),
     ];
 
     let snapshot = InstanceSnapshot::new()
@@ -107,7 +108,6 @@ pub fn snapshot_dir_no_meta(
 mod test {
     use super::*;
 
-    use maplit::hashmap;
     use memofs::{InMemoryFs, VfsSnapshot};
 
     #[test]
@@ -116,12 +116,11 @@ mod test {
         imfs.load_snapshot("/foo", VfsSnapshot::empty_dir())
             .unwrap();
 
-        let mut vfs = Vfs::new(imfs);
+        let vfs = Vfs::new(imfs);
 
-        let instance_snapshot =
-            snapshot_dir(&InstanceContext::default(), &mut vfs, Path::new("/foo"))
-                .unwrap()
-                .unwrap();
+        let instance_snapshot = snapshot_dir(&InstanceContext::default(), &vfs, Path::new("/foo"))
+            .unwrap()
+            .unwrap();
 
         insta::assert_yaml_snapshot!(instance_snapshot);
     }
@@ -131,18 +130,15 @@ mod test {
         let mut imfs = InMemoryFs::new();
         imfs.load_snapshot(
             "/foo",
-            VfsSnapshot::dir(hashmap! {
-                "Child" => VfsSnapshot::empty_dir(),
-            }),
+            VfsSnapshot::dir([("Child", VfsSnapshot::empty_dir())]),
         )
         .unwrap();
 
-        let mut vfs = Vfs::new(imfs);
+        let vfs = Vfs::new(imfs);
 
-        let instance_snapshot =
-            snapshot_dir(&InstanceContext::default(), &mut vfs, Path::new("/foo"))
-                .unwrap()
-                .unwrap();
+        let instance_snapshot = snapshot_dir(&InstanceContext::default(), &vfs, Path::new("/foo"))
+            .unwrap()
+            .unwrap();
 
         insta::assert_yaml_snapshot!(instance_snapshot);
     }

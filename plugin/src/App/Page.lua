@@ -1,8 +1,9 @@
 local Rojo = script:FindFirstAncestor("Rojo")
 local Plugin = Rojo.Plugin
+local Packages = Rojo.Packages
 
-local Roact = require(Rojo.Roact)
-local Flipper = require(Rojo.Flipper)
+local Roact = require(Packages.Roact)
+local Flipper = require(Packages.Flipper)
 
 local Dictionary = require(Plugin.Dictionary)
 
@@ -14,7 +15,7 @@ local Page = Roact.Component:extend("Page")
 
 function Page:init()
 	self:setState({
-		rendered = self.props.active
+		rendered = self.props.active,
 	})
 
 	self.motor = Flipper.SingleMotor.new(self.props.active and 1 or 0)
@@ -50,20 +51,21 @@ function Page:render()
 		Size = UDim2.new(1, 0, 1, 0),
 		BackgroundTransparency = 1,
 	}, {
-		Component = e(self.props.component, Dictionary.merge(self.props, {
-			transparency = transparency,
-		}))
+		Component = e(
+			self.props.component,
+			Dictionary.merge(self.props, {
+				transparency = transparency,
+			})
+		),
 	})
 end
 
 function Page:didUpdate(lastProps)
 	if self.props.active ~= lastProps.active then
-		self.motor:setGoal(
-			Flipper.Spring.new(self.props.active and 1 or 0, {
-				frequency = 6,
-				dampingRatio = 1,
-			})
-		)
+		self.motor:setGoal(Flipper.Spring.new(self.props.active and 1 or 0, {
+			frequency = 6,
+			dampingRatio = 1,
+		}))
 	end
 end
 
